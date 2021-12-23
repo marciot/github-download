@@ -5,206 +5,145 @@ import listContent from 'list-github-dir-content';
 const urlParserRegex = /^[/]([^/]+)[/]([^/]+)[/]tree[/]([^/]+)[/](.*)/;
 
 function updateStatus(status, ...extra) {
-	const element = document.querySelector('.status');
-	element.innerHTML = status || '';
-	console.log(element.textContent, ...extra);
-}
-
-async function waitForToken() {
-	const input = document.querySelector('#token');
-
-	if (localStorage.token) {
-		input.value = localStorage.token;
-	} else {
-		const toggle = document.querySelector('#token-toggle');
-		toggle.checked = true;
-		updateStatus('Waiting for token...');
-		await new Promise(resolve => {
-			input.addEventListener('input', function handler() {
-				if (input.checkValidity()) {
-					toggle.checked = false;
-					resolve();
-					input.removeEventListener('input', handler);
-				}
-			});
-		});
-	}
+    const element = document.querySelector('.status');
+    element.innerHTML = status || '';
+    console.log(element.textContent, ...extra);
 }
 
 async function fetchRepoInfo(repo) {
-	const response = await fetch(`https://api.github.com/repos/${repo}`,
-		localStorage.token ? {
-			headers: {
-				Authorization: `Bearer ${localStorage.token}`,
-			},
-		} : {},
-	);
+    const response = await fetch(`https://api.github.com/repos/${repo}`);
 
-	switch (response.status) {
-		case 401:
-			updateStatus('⚠ The token provided is invalid or has been revoked.', {token: localStorage.token});
-			throw new Error('Invalid token');
+    switch (response.status) {
+        case 401:
+            updateStatus('⚠ The token provided is invalid or has been revoked.', {token: localStorage.token});
+            throw new Error('Invalid token');
 
-		case 403:
-			// See https://developer.github.com/v3/#rate-limiting
-			if (response.headers.get('X-RateLimit-Remaining') === '0') {
-				updateStatus('⚠ Your token rate limit has been exceeded.', {token: localStorage.token});
-				throw new Error('Rate limit exceeded');
-			}
+        case 403:
+            // See https://developer.github.com/v3/#rate-limiting
+            if (response.headers.get('X-RateLimit-Remaining') === '0') {
+                updateStatus('⚠ Your token rate limit has been exceeded.', {token: localStorage.token});
+                throw new Error('Rate limit exceeded');
+            }
 
-			break;
+            break;
 
-		case 404:
-			updateStatus('⚠ Repository was not found.', {repo});
-			throw new Error('Repository not found');
+        case 404:
+            updateStatus('⚠ Repository was not found.', {repo});
+            throw new Error('Repository not found');
 
-		default:
-	}
+        default:
+    }
 
-	if (!response.ok) {
-		updateStatus('⚠ Could not obtain repository data from the GitHub API.', {repo, response});
-		throw new Error('Fetch error');
-	}
+    if (!response.ok) {
+        updateStatus('⚠ Could not obtain repository data from the GitHub API.', {repo, response});
+        throw new Error('Fetch error');
+    }
 
-	return response.json();
+    return response.json();
 }
 
 async function getZIP() {
-	const {default: JSZip} = await import(new URL('https://cdn.skypack.dev/jszip@^3.4.0'));
-	return new JSZip();
+    const {default: JSZip} = await import(new URL('https://cdn.skypack.dev/jszip@^3.4.0'));
+    return new JSZip();
 }
 
 async function init() {
-	const zip = getZIP();
-	let user;
-	let repository;
-	let ref;
-	let dir;
+    const zip = getZIP();
+    let user;
+    let repository;
+    let ref;
+    let dir;
 
-	const input = document.querySelector('#token');
-	if (localStorage.token) {
-		input.value = localStorage.token;
-	}
+    try {
+        const query = new URLSearchParams(location.search);
+        const parsedUrl = new URL(query.get('url'));
+        [, user, repository, ref, dir] = urlParserRegex.exec(parsedUrl.pathname);
 
-	input.addEventListener('input', () => {
-		if (input.checkValidity()) {
-			localStorage.token = input.value;
-		}
-	});
+        console.log('Source:', {user, repository, ref, dir});
+    } catch {
+        return updateStatus();
+    }
 
-	try {
-		const query = new URLSearchParams(location.search);
-		const parsedUrl = new URL(query.get('url'));
-		[, user, repository, ref, dir] = urlParserRegex.exec(parsedUrl.pathname);
+    if (!navigator.onLine) {
+        updateStatus('⚠ You are offline.');
+        throw new Error('You are offline');
+    }
 
-		console.log('Source:', {user, repository, ref, dir});
-	} catch {
-		return updateStatus();
-	}
+    updateStatus('Retrieving directory info…');
 
-	if (!navigator.onLine) {
-		updateStatus('⚠ You are offline.');
-		throw new Error('You are offline');
-	}
+    const {private: repoIsPrivate} = await fetchRepoInfo(`${user}/${repository}`);
 
-	updateStatus('Retrieving directory info…');
+    const files = await listContent.viaTreesApi({
+        user,
+        repository,
+        ref,
+        directory: decodeURIComponent(dir),
+        token: localStorage.token,
+        getFullData: true,
+    });
 
-	const {private: repoIsPrivate} = await fetchRepoInfo(`${user}/${repository}`);
+    if (files.length === 0) {
+        updateStatus('No files to download');
+        return;
+    }
 
-	const files = await listContent.viaTreesApi({
-		user,
-		repository,
-		ref,
-		directory: decodeURIComponent(dir),
-		token: localStorage.token,
-		getFullData: true,
-	});
+    updateStatus(`Downloading (0/${files.length}) files…`, '\n• ' + files.map(file => file.path).join('\n• '));
 
-	if (files.length === 0) {
-		updateStatus('No files to download');
-		return;
-	}
+    const controller = new AbortController();
 
-	updateStatus(`Downloading (0/${files.length}) files…`, '\n• ' + files.map(file => file.path).join('\n• '));
+    const fetchPublicFile = async file => {
+        const response = await fetch(`https://raw.githubusercontent.com/${user}/${repository}/${ref}/${file.path}`, {
+            signal: controller.signal,
+        });
 
-	const controller = new AbortController();
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.statusText} for ${file.path}`);
+        }
 
-	const fetchPublicFile = async file => {
-		const response = await fetch(`https://raw.githubusercontent.com/${user}/${repository}/${ref}/${file.path}`, {
-			signal: controller.signal,
-		});
+        return response.blob();
+    };
 
-		if (!response.ok) {
-			throw new Error(`HTTP ${response.statusText} for ${file.path}`);
-		}
+    let downloaded = 0;
 
-		return response.blob();
-	};
+    const download = async file => {
+        const blob = await fetchPublicFile(file);
 
-	const fetchPrivateFile = async file => {
-		const response = await fetch(file.url, {
-			headers: {
-				Authorization: `Bearer ${localStorage.token}`,
-			},
-			signal: controller.signal,
-		});
+        downloaded++;
+        updateStatus(`Downloading (${downloaded}/${files.length}) files…`, file.path);
 
-		if (!response.ok) {
-			throw new Error(`HTTP ${response.statusText} for ${file.path}`);
-		}
+        (await zip).file(file.path.replace(dir + '/', ''), blob, {
+            binary: true,
+        });
+    };
 
-		const {content} = await response.json();
-		const decoder = await fetch(`data:application/octet-stream;base64,${content}`);
-		return decoder.blob();
-	};
+    try {
+        await Promise.all(files.map(file => download(file)));
+    } catch (error) {
+        controller.abort();
 
-	let downloaded = 0;
+        if (!navigator.onLine) {
+            updateStatus('⚠ Could not download all files, network connection lost.');
+        } else if (error.message.startsWith('HTTP ')) {
+            updateStatus('⚠ Could not download all files.');
+        } else {
+            updateStatus('⚠ Some files were blocked from downloading, try to disable any ad blockers and refresh the page.');
+        }
 
-	const download = async file => {
-		const blob = repoIsPrivate
-			? await fetchPrivateFile(file)
-			: await fetchPublicFile(file);
+        throw error;
+    }
 
-		downloaded++;
-		updateStatus(`Downloading (${downloaded}/${files.length}) files…`, file.path);
+    updateStatus(`Zipping ${downloaded} files…`);
 
-		(await zip).file(file.path.replace(dir + '/', ''), blob, {
-			binary: true,
-		});
-	};
+    const zipBlob = await (await zip).generateAsync({
+        type: 'blob',
+    });
 
-	if (repoIsPrivate) {
-		await waitForToken();
-	}
-
-	try {
-		await Promise.all(files.map(file => download(file)));
-	} catch (error) {
-		controller.abort();
-
-		if (!navigator.onLine) {
-			updateStatus('⚠ Could not download all files, network connection lost.');
-		} else if (error.message.startsWith('HTTP ')) {
-			updateStatus('⚠ Could not download all files.');
-		} else {
-			updateStatus('⚠ Some files were blocked from downloading, try to disable any ad blockers and refresh the page.');
-		}
-
-		throw error;
-	}
-
-	updateStatus(`Zipping ${downloaded} files…`);
-
-	const zipBlob = await (await zip).generateAsync({
-		type: 'blob',
-	});
-
-	await saveFile(zipBlob, `${user} ${repository} ${ref} ${dir}.zip`.replace(/\//, '-'));
-	updateStatus(`Downloaded ${downloaded} files! Done!`);
+    await saveFile(zipBlob, `${user} ${repository} ${ref} ${dir}.zip`.replace(/\//, '-'));
+    updateStatus(`Downloaded ${downloaded} files! Done!`);
 }
 
 init();
 
 window.addEventListener('load', () => {
-	navigator.serviceWorker.register(new URL('service-worker.js'));
+    navigator.serviceWorker.register(new URL('service-worker.js'));
 });
