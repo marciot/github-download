@@ -1,5 +1,68 @@
-import saveFile from 'save-file';
-import listContent from 'list-github-dir-content';
+async function api(endpoint, token) {
+    const response = await fetch(`https://api.github.com/repos/${endpoint}`, {
+        headers: token ? {
+            Authorization: `Bearer ${token}`
+        } : undefined
+    });
+    return response.json();
+}
+
+// Great for downloads with many sub directories
+// Pros: one request + maybe doesn't require token
+// Cons: huge on huge repos + may be truncated
+async function viaTreesApi({
+    user,
+    repository,
+    ref = 'HEAD',
+    directory,
+    token,
+    getFullData = false
+}) {
+    if (!directory.endsWith('/')) {
+        directory += '/';
+    }
+
+    const files = [];
+    const contents = await api(`${user}/${repository}/git/trees/${ref}?recursive=1`, token);
+    if (contents.message) {
+        throw new Error(contents.message);
+    }
+
+    for (const item of contents.tree) {
+        if (item.type === 'blob' && item.path.startsWith(directory)) {
+            files.push(getFullData ? item : item.path);
+        }
+    }
+
+    files.truncated = contents.truncated;
+    return files;
+}
+
+var planned = null
+
+function save (blob, filename) {
+    if (planned) {
+        return planned.then(function () {
+            planned = save(data, filename)
+            return planned
+        })
+    }
+    else {
+        planned = new Promise(function (ok, nok) {
+
+            saveAs(blob, filename)
+
+            //prompt next dialog only when window got focus back
+            window.addEventListener('focus', function resolve() {
+                planned = null
+                window.removeEventListener('focus', resolve)
+                ok()
+            })
+        })
+
+        return planned
+    }
+}
 
 // Matches '/<re/po>/tree/<ref>/<dir>'
 const urlParserRegex = /^[/]([^/]+)[/]([^/]+)[/]tree[/]([^/]+)[/](.*)/;
@@ -73,7 +136,7 @@ async function init() {
 
     const {private: repoIsPrivate} = await fetchRepoInfo(`${user}/${repository}`);
 
-    const files = await listContent.viaTreesApi({
+    const files = await viaTreesApi({
         user,
         repository,
         ref,
@@ -111,7 +174,7 @@ async function init() {
         downloaded++;
         updateStatus(`Downloading (${downloaded}/${files.length}) files…`, file.path);
 
-        (await zip).file(file.path.replace(dir + '/', ''), blob, {
+        (await zip).file(file.path, blob, {
             binary: true,
         });
     };
@@ -138,12 +201,8 @@ async function init() {
         type: 'blob',
     });
 
-    await saveFile(zipBlob, `${user} ${repository} ${ref} ${dir}.zip`.replace(/\//, '-'));
+    await save(zipBlob, `${user} ${repository} ${ref} ${dir}.zip`.replace(/\//, '-'));
     updateStatus(`Downloaded ${downloaded} files! Done!`);
 }
 
 init();
-
-window.addEventListener('load', () => {
-    navigator.serviceWorker.register(new URL('service-worker.js'));
-});
