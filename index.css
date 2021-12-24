@@ -17,6 +17,12 @@ body {
     border: 3px solid gray;
     text-align: center;
     font: 17px / 1.7 sans-serif;
+    display: flex;
+    flex-direction: column;
+}
+
+main {
+    flex-grow: 1;
 }
 
 svg {

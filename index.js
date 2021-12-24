@@ -124,7 +124,7 @@ async function init() {
 
         console.log('Source:', {user, repository, ref, dir});
     } catch {
-        return updateStatus();
+        return updateStatus("No URL specified.");
     }
 
     if (!navigator.onLine) {
@@ -174,7 +174,7 @@ async function init() {
         downloaded++;
         updateStatus(`Downloading (${downloaded}/${files.length}) files…`, file.path);
 
-        (await zip).file(file.path, blob, {
+        (await zip).file(file.path.replace(dir + '/', ''), blob, {
             binary: true,
         });
     };
@@ -201,8 +201,8 @@ async function init() {
         type: 'blob',
     });
 
-    await save(zipBlob, `${user} ${repository} ${ref} ${dir}.zip`.replace(/\//, '-'));
-    updateStatus(`Downloaded ${downloaded} files! Done!`);
+    await save(zipBlob, `${dir}.zip`.replace(/\//, '-'));
+    updateStatus(`Downloaded ${downloaded} files!`);
 }
 
 init();
